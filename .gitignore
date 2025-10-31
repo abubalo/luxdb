@@ -1,7 +1,8 @@
 node_modules/
 dist/
 # database document
-db
+data/
+db/
 .doc
 
 # package manager
