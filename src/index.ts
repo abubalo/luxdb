@@ -1,4 +1,4 @@
-import { luxdb } from './luxdb';
+
 
 export { ObjectLiteral, KeyChain, Comparator, Matcher, Config, Lock, Storage } from './types';
 /**
