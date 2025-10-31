@@ -6,166 +6,300 @@
 [![NPM Downloads](https://img.shields.io/npm/dw/lux-db)](https://www.npmjs.com/package/lux-db)
 
 
-LuxDB is your lightweight, developer-friendly document-based database, crafted to streamline the storage, manipulation, and retrieval of JSON data in your applications. It's the perfect fit for a wide range of use cases.
+A lightweight, type-safe JSON database for Node.js with a fluent query interface and ACID-compliant transactions.
 
 ## Features
 
-- **Query Operations**: Supports CRUD (Create, Read, Update, Delete) operations:
-insert: Adds items to the database.
-getOne: Retrieves a single item based on specified keys.
-getAll: Retrieves multiple items based on specified keys.
-updateOne: Updates a single item in the database.
-updateAll: Updates multiple items in the database.
-deleteOne: Deletes a single item from the database.
-deleteAll: Deletes multiple items from the database.
+**Type-Safe**: Full TypeScript support with generics  
+**Fluent Queries**: Intuitive query builder with multiple syntax styles  
+**ACID Transactions**: Atomic operations with automatic rollback  
+**Concurrency Control**: Built-in locking to prevent race conditions  
+**Zero Dependencies**: No external libraries (except Node.js built-ins)  
+**Easy to Use**: Simple API that's easy to learn
 
-
-- **Optimized for Small-scale Projects**: With its simple and lightweight implementation, LuxDB is tailored for small-scale JavaScript/TypeScript projects. Its functionality strikes a balance between robust features and simplicity, catering to the needs of smaller applications without unnecessary complexity.
-
-- **Caching**: Utilizes an in-memory cache to store database items, enhancing read and write operations' speed. Implements a least recently used (LRU) caching mechanism to manage cache size and eviction of less frequently accessed items.
-
-- **Indexing**: Maintains indexes for different fields of the database items to optimize retrieval based on specific keys. Updates indexes whenever items are added, ensuring efficient querying.
-
-- **Error Handling**: Custom error handling for file not found, database errors, and various file system operation failures.
-## Use Cases
-
-There are several potential use cases of luxDB, among them are:
-
-- **Small to Medium-Sized Applications**: Ideal for simple web or mobile applications requiring a lightweight database solution for structured data storage and retrieval.
-
-- **User Preference:** Store user preferences such as theme choices, notification settings, and custom configurations.
-
-- **Content Management System:** Store articles, posts, or other content as documents in the database.
-
-- **Product Catalog:**  Manage product information for e-commerce websites including details, prices, and availability.
-
-- **Logging and Audit Trails:** Store logs and audit trails for your application to keep track of user actions and system events.
-
-- **Task Management:** Implement a task management system where each task is a document in the database.
-
-- **Messaging:** For building a simple chat or messaging application, you can store chat messages as documents.
-
-- **Configuration Management**: Storing configuration settings or application preferences that can be easily accessed and modified
-
-- **Data Caching:** Utilize as a caching mechanism for frequently accessed data.
-
-- **IoT Data Storage**: Storing and managing IoT (Internet of Things) device data in scenarios where a lightweight database is suitable for the scale and complexity of the data.
-
-- **Custom Data Storage:** For any application where you need to persist custom data structures, this database can be adapted to store and manage that data.
-
-In addition to its boundless possibilities, LuxDB offers the advantage of type safety. By leveraging TypeScript for runtime data validation, it ensures that any inserted data adheres to the defined schema. If a mismatch occurs, an instance error is raised, enhancing the security of your data.
-
-## Getting Started
-
-### Installation
+## Installation
 
 ```bash
-npm i lux-db --save-dev
+npm install luxdb
 ```
 
-### Usage
+## Quick Start
 
-```ts filename="index.ts"
-import luxdb, { autoId } from 'lux-db';
+```typescript
+import { LuxDB } from 'luxdb';
 
-// Define the schema of your data
-interface Todo {
+// Define your data structure
+interface User {
   id: string;
   name: string;
-  status: 'pending' | 'completed' | 'archive';
-  author: {
-    name: string;
-  };
+  age: number;
+  status: 'active' | 'inactive';
 }
 
-// Instantiate the database. 
-// Specify name with not extionsion, and destination directory(optional). If destination is not provided, the default will be 'db' 
-const db = luxdb<Todo>('file-name', "my-db");
+const db = await LuxDB.create<User>('users');
 
-// Insert a single item
-const insertItem = async () => {
-  const item = await db.insert({
-    id: autoId(),
-    name: 'Buy groceries',
-    status: 'pending',
-    author: {
-      name: 'Alice',
-    },
-  });
+await db.insert({ id: '1', name: 'Alice', age: 25, status: 'active' });
 
-  return item
-};
+const user = await db.getOne().where({ name: 'Alice' });
+const adults = await db.getAll().where('age', '>=', 18);
 
-// Insert multiple items
-const insertItems = async () => {
-  const todos: Todo[] = [
-    {
-      id: autoId(),
-      name: 'Write a report',
-      status: 'pending',
-      author: {
-        name: 'Bob',
-      },
-    },
-    // ... more items
-  ];
+await db.updateOne({ status: 'inactive' }).where('id', '=', '1');
 
-  // Insert multiple items into the database
-  const items = await db.insert(todos);
-
-  return items;
-};
-
-// Select a single item from the database
-const selectItem = async () => {
-  // Select an item where the status is "pending"
-  const todo = await db.getOne('name', 'author', 'status').where('status').equals('pending').run();
-  return todo;
-};
-
-// Select all items from the database
-const selectItems = async () => {
-  // Select items where the author's name is "John Doe"
-  const items = await db.getAll('id', 'name', 'author').where('author.name').equals('John Doe').run();
-  return items;
-};
-
-// Update a single item in the database
-const updateItem = async () => {
-  // Update an item where the author's name is "John Doe" to have a "completed" status
-  await db.updateOne({ status: 'completed' }).where('author.name').equals('John Doe').run();
-};
-
-// Update multiple items in the database
-const updateAllItems = async () => {
-  // Update items where the author's name is "Abu Balo" to have a new name and status
-  const items = await db
-    .updateAll({ name: 'Cook the meal', status: 'completed' })
-    .where('author.name')
-    .equals('Abu Balo')
-    .run();
-  return items;
-};
-
-// Delete a single item from the database
-const deleteItem = async () => {
-  // Delete an item where the author's name is "Abu Balo"
-  const item = await db.deleteOne().where('author.name').equals('Abu Balo').run();
-  return item;
-};
-
-// Delete multiple items from the database
-const deleteAllItems = async () => {
-  // Delete all items where the author's name is "Abu Balo"
-  const items = await db.deleteAll().where('author.name').equals('Abu Balo').run();
-  return items;
-};
+await db.deleteOne().where('id', '=', '1');
 ```
 
-// Execute your queries with `ts-node {path/to/your-ts-file.ts}` in the terminal
+## Query Syntax
 
-> ⚠️ **Disclaimer:** Please note that this database is relatively simple and may not be suitable for very large-scale or high-performance applications. It lacks features like indexing, complex querying, and transaction support that more robust databases like SQL or NoSQL databases provide. However, for small to medium-sized applications or prototyping, it can be a convenient and lightweight solution.
+LuxDB supports multiple query syntaxes for flexibility:
+
+### Object Syntax (Recommended for Simple Queries)
+
+```typescript
+// Single condition
+await db.getOne().where({ name: 'Alice' });
+
+// Multiple conditions
+await db.getAll().where({ status: 'active', age: 25 });
+```
+
+### Operator Syntax (For Complex Queries)
+
+```typescript
+// Comparison operators
+await db.getAll().where('age', '>', 18);
+await db.getAll().where('age', '<=', 65);
+await db.getAll().where('name', '!=', 'Alice');
+
+// IN operator
+await db.getAll().where('status', 'in', ['active', 'pending']);
+
+// BETWEEN operator
+await db.getAll().where('age', 'between', [18, 65]);
+
+// MATCHES operator (regex)
+await db.getAll().where('email', 'matches', /.*@example\.com$/);
+```
+
+### Hybrid Syntax (Mix Both Styles)
+
+```typescript
+await db.getAll()
+  .where({ status: 'active' })
+  .where('age', '>', 25);
+```
+
+### Available Operators
+
+| Operator | Symbol | Example |
+|----------|--------|---------|
+| Equals | `=` | `.where('age', '=', 25)` |
+| Not Equal | `!=` | `.where('status', '!=', 'inactive')` |
+| Greater Than | `>` | `.where('age', '>', 18)` |
+| Less Than | `<` | `.where('age', '<', 65)` |
+| Greater or Equal | `>=` | `.where('age', '>=', 18)` |
+| Less or Equal | `<=` | `.where('age', '<=', 65)` |
+| In | `in` | `.where('status', 'in', ['active', 'pending'])` |
+| Between | `between` | `.where('age', 'between', [18, 65])` |
+| Matches | `matches` | `.where('email', 'matches', /pattern/)` |
+
+## Field Selection
+
+Select specific fields instead of returning entire objects:
+
+```typescript
+// Get only name and email
+const users = await db.getAll('name', 'email').where({ status: 'active' });
+// Returns: [{ name: 'Alice', email: 'alice@example.com' }, ...]
+
+// Single field
+const names = await db.getAll('name');
+// Returns: [{ name: 'Alice' }, { name: 'Bob' }, ...]
+```
+
+## Transactions
+
+Perform multiple operations atomically with automatic rollback on failure:
+
+```typescript
+const tx = await db.beginTransaction();
+
+try {
+  // Add operations
+  tx.insert({ id: '1', name: 'Alice', age: 25, status: 'active' });
+  tx.update(user => user.id === '2', { status: 'active' });
+  tx.delete(user => user.age < 18);
+  
+  // Commit all changes atomically
+  await tx.commit();
+} catch (error) {
+  // Automatic rollback on error
+  await tx.rollback();
+}
+```
+
+## API Reference
+
+### LuxDB Methods
+
+#### `LuxDB.create<T>(fileName, destination?)`
+Create and initialize a new database instance.
+
+```typescript
+const db = await LuxDB.create<User>('users', './data');
+```
+
+#### `insert(item | items[])`
+Insert one or more items.
+
+```typescript
+await db.insert({ id: '1', name: 'Alice' });
+await db.insert([{ id: '2', name: 'Bob' }, { id: '3', name: 'Charlie' }]);
+```
+
+#### `getOne(...fields?)`
+Find a single item. Returns `null` if not found.
+
+```typescript
+const user = await db.getOne().where({ id: '1' });
+const userInfo = await db.getOne('name', 'email').where({ id: '1' });
+```
+
+#### `getAll(...fields?)`
+Find all matching items. Returns empty array if none found.
+
+```typescript
+const users = await db.getAll().where({ status: 'active' });
+const names = await db.getAll('name').where({ status: 'active' });
+```
+
+#### `updateOne(updates)`
+Update a single matching item. Returns the updated item or `null`.
+
+```typescript
+const updated = await db.updateOne({ status: 'inactive' })
+  .where('id', '=', '1');
+```
+
+#### `updateAll(updates)`
+Update all matching items. Returns array of updated items.
+
+```typescript
+const updated = await db.updateAll({ status: 'active' })
+  .where('age', '>=', 18);
+```
+
+#### `deleteOne()`
+Delete a single matching item. Returns the deleted item or `null`.
+
+```typescript
+const deleted = await db.deleteOne().where('id', '=', '1');
+```
+
+#### `deleteAll()`
+Delete all matching items. Returns array of deleted items.
+
+```typescript
+const deleted = await db.deleteAll().where({ status: 'inactive' });
+```
+
+#### `beginTransaction()`
+Start a new transaction.
+
+```typescript
+const tx = await db.beginTransaction();
+```
+
+#### `clear()`
+Delete all data from the database. **Use with caution!**
+
+```typescript
+await db.clear();
+```
+
+#### `size`
+Get the number of items in the database.
+
+```typescript
+console.log(`Database has ${db.size} items`);
+```
+
+### Transaction Methods
+
+#### `insert(item | items[])`
+Add insert operation to transaction.
+
+#### `update(predicate, updates)`
+Add update operation to transaction.
+
+#### `delete(predicate)`
+Add delete operation to transaction.
+
+#### `commit()`
+Commit all operations atomically.
+
+#### `rollback()`
+Rollback all operations and restore original state.
+
+## Error Handling
+
+LuxDB provides specific error types for different scenarios:
+
+```typescript
+import { 
+  DatabaseError,
+  FileNotFoundError,
+  TransactionError,
+  LockError 
+} from 'luxdb';
+
+try {
+  await db.insert({ id: '1', name: 'Alice' });
+} catch (error) {
+  if (error instanceof LockError) {
+    console.error('Failed to acquire lock');
+  } else if (error instanceof DatabaseError) {
+    console.error('Database operation failed:', error.message);
+  }
+}
+```
+## Architecture
+
+LuxDB follows clean architecture principles:
+
+- **Separation of Concerns**: Database logic, storage, and queries are separated
+- **SOLID Principles**: Each class has a single responsibility
+- **Concurrency Control**: Mutex locks prevent race conditions
+- **ACID Compliance**: Transactions ensure data integrity
+
+## Performance Considerations
+
+- **In-Memory**: All data is kept in memory for fast access
+- **Lazy Write**: Data is written to disk only when modified
+- **Locking**: Ensures data consistency but may impact concurrent writes
+- **JSON Serialization**: Uses native JSON.stringify/parse for efficiency
+
+## Limitations
+
+- **Not for Large Datasets**: Best for small to medium datasets (< 100k items)
+- **No Indexing Yet**: Sequential search for queries (O(n) complexity)
+- **Single File**: All data in one JSON file
+- **No Sharding**: Not designed for distributed systems
+- **Node.js Only**: Requires Node.js filesystem APIs
+
+## Future Enhancements
+
+- [ ] Indexing for faster queries
+- [ ] Query optimization
+- [ ] Compression support
+- [ ] Schema validation
+- [ ] Migrations
+- [ ] Backup/restore utilities
+- [ ] Watch mode for real-time updates
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-[MIT License](/LICENSE).
+[MIT License](/LICENSE) - see LICENSE file for details
