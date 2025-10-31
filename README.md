@@ -2,7 +2,7 @@
 
 ![GitHub](https://img.shields.io/github/license/abubalo/lux-db)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.9.3-blue)
-![latest](https://img.shields.io/badge/lastest-1.0.3-yellow)
+![latest](https://img.shields.io/badge/lastest-2.0.0-yellow)
 [![NPM Downloads](https://img.shields.io/npm/dw/lux-db)](https://www.npmjs.com/package/lux-db)
 
 
