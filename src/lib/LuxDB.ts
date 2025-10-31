@@ -1,394 +1,396 @@
 import * as path from 'path';
-import fs, { existsSync } from 'fs';
-import { readFile, writeFile } from 'fs/promises';
-import { Config, KeyChain, Matcher, ObjectLiteral } from '../types';
-import { collect } from '../utils/collect';
-import { matchDataKeyValue } from '../utils/match-data-key-value';
+import { existsSync, mkdirSync } from 'fs';
+import { KeyChain, ObjectLiteral } from '../types';
+import { DatabaseError } from '../customError/Errors';
+import { FileStore } from '../storage/FileStore';
+import { Mutex } from '../storage/Lock';
+import { WAL, OperationType } from '../storage/WAL';
+import { Transaction } from './Transaction';
+import { QueryBuilder } from '../query/QueryBuilder';
 import { createItemFromKeys } from '../utils/create-items-from-keys';
-import { DatabaseError, FileNotFoundError } from '../customError/Errors';
+import { LuxDBConfig, mergeConfig, validateConfig } from './config';
+import { withId, hasId } from '../utils/helpers';
+import { matchDataKeyValue } from '../utils/match-data-key-value';
 
 /**
- * Represents a simple JSON database with query capabilities.
+ * LuxDB - A simple JSON-based database with query capabilities
  *
- * @template T - Type of the database items.
+ * Features:
+ * - ACID-compliant transactions
+ * - Fluent query interface
+ * - Concurrency control with locks
+ * - Type-safe operations
+ *
+ * @template T - Type of the database items (must have an 'id' field)
  */
 export class LuxDB<T extends object> {
-  private static instance: LuxDB<any> | null
-  private readonly filePath: string;
-  private _size = 0;
-  private cache: Map<string, T> = new Map();
-  private indexes: Map<string, Map<string, T>> = new Map(); //indexes for different fields
-  private isDirty = false;
-  private maxCacheSize = 500; // Set the maximum cache size
-  private dynamicCacheThreshold = 0.8;
-  private lruQueue: string[] = []; //Track usage order of item in the cache
+  private data: T[] = [];
+  private initialized = false;
+  private readonly store: FileStore<T>;
+  private readonly lock = new Mutex();
+  private wal?: WAL<T>;
+  private config: Required<LuxDBConfig>;
 
   /**
-   * The number of items in the database.
+   * Private constructor - use static create() method instead
    */
-  get size() {
-    return this._size;
-  }
-
-  /**
-   * Creates a new LuxDB instance.
-   *
-   * @param {string} fileName - The name of the database file (without extension).
-   * @param {string} destination - The destination for the database (default is 'db' if not specified).
-   */
-  constructor(
-    private fileName: string,
-    private destination = 'db',
+  private constructor(
+    private readonly filePath: string,
+    config: LuxDBConfig,
   ) {
-    // Construct the full file path
-    this.filePath = path.join(this.createDir(destination), `${fileName}.json`);
+    this.config = mergeConfig(config);
+    this.store = new FileStore<T>(filePath);
 
-    this.loadCache();
+    if (!this.config.enableWAL) {
+      this.wal = new WAL<T>(filePath);
+    }
   }
 
+  /**
+   * Factory method to create a properly initialized LuxDB instance
+   *
+   * @param config - Database configuration (string or config object)
+   * @returns Initialized LuxDB instance
+   *
+   * @example
+   * // Simple usage
+   * const db = await LuxDB.create<User>('users');
+   *
+   * // With config
+   * const db = await LuxDB.create<User>({
+   *   fileName: 'users',
+   *   destination: './data',
+   *   enableWAL: true,
+   *   autoId: true
+   * });
+   */
+  static async create<T extends object>(config: LuxDBConfig | string): Promise<LuxDB<T>> {
   
-/**
- * Create and return a single/global instance of the LuxDB.
- * @param fileName - The name of the database file (without extension).
- * @param destination - The folder where the databases will be located.
- * @returns The LuxDB instance.
- */
-  static creatInstance<U extends object>(fileName: string, destination?: string): LuxDB<U>{
+    const cfg: LuxDBConfig = typeof config === 'string' ? { fileName: config } : config;
+    validateConfig(cfg);
 
+    const mergedConfig = mergeConfig(cfg);
+    const { fileName, destination } = mergedConfig;
 
-      if(!LuxDB.instance){
-        LuxDB.instance = new LuxDB<U>(fileName, destination);
-      }
-
-      return LuxDB.instance
-  }
-
-  /**
-   * Creates the destination directory if it doesn't exist.
-   *
-   * @param {string} destinationDir - The destination directory path.
-   * @throws {DatabaseError} Throws an error if the directory creation fails.
-   * @returns {string} The destination directory path.
-   */
-  private createDir(destinationDir: string): string {
-    try {
-      if (!existsSync(destinationDir)) {
-        fs.mkdirSync(destinationDir, { recursive: true });
-      }
-
-      return destinationDir;
-    } catch (error) {
-      throw new DatabaseError(`Unable to create folder ${destinationDir}: ${error}`);
-    }
-  }
-
-  /**
-   * Loads data from the database file into the cache.
-   *
-   * @throws {FileNotFoundError} Throws a custom error if the file doesn't exist.
-   * @throws {DatabaseError} Throws a custom error for other initialization errors.
-   */
-  private async loadCache() {
-    try {
-      const fileData = await readFile(this.filePath, 'utf-8');
-      const parseData = JSON.parse(fileData);
-      this._size = parseData.length;
-
-      parseData.forEach((item: T) => {
-        // Add items to the cache using a unique key (e.g., ID)
-        this.cache.set(this.getKeyForItem(item), item);
-      });
-    } catch (error: any) {
-      if (error.code === 'ENOENT') {
-        // Set Map to an empty Map
-        this.cache = new Map();
-        // Throw a custom FileNotFoundError if the file doesn't exist
-        throw new FileNotFoundError(this.filePath, error.code);
-      } else {
-        // Throw a DatabaseError for other errors
-        throw new DatabaseError(`Failed to initialize database: ${error.message}`, -1);
-      }
-    }
-  }
-
-  /**
-   * Adjusts the maximum cache size dynamically based on usage.
-   */
-  private adjustCacheSize() {
-    const currentCacheSize = this.cache.size / this.maxCacheSize;
-
-    if (currentCacheSize > this.dynamicCacheThreshold) {
-      const newMaxCacheSize = Math.ceil(this.cache.size / this.dynamicCacheThreshold);
-      this.maxCacheSize = newMaxCacheSize;
-      // Perform trimming or eviction based on the new maxCacheSize
-      this.trimCache();
-    }
-  }
-
-  /**
-   * Trims the cache by evicting least recently used items to meet the maxCacheSize limit.
-   */
-  private trimCache() {
-    while (this.cache.size > this.maxCacheSize) {
-      const lruKey = this.lruQueue.shift();
-      if (lruKey) {
-        const deletedItem = this.cache.get(lruKey);
-        this.cache.delete(lruKey);
-        this.removeFromIndexes(deletedItem);
-      }
-    }
-  }
-
-  /**
-   * Adds data to the cache and maintains cache size and indexes.
-   * @param {T | T[]} data - The data or array of data to add to the cache.
-   */
-  private addToCache(data: T | T[]): void {
-    const items = Array.isArray(data) ? data : [data];
-
-    items.forEach((item) => {
-      const key = this.getKeyForItem(item);
-
-      // Add/update the item in the cache
-      this.cache.set(key, item);
-
-      // Update indexes for different fields
-      for (const field in item) {
-        const fieldValue = item[field] as unknown as string;
-        if (!this.indexes.has(field)) {
-          this.indexes.set(field, new Map());
-        }
-        this.indexes.get(field)?.set(fieldValue, item);
-      }
-    });
-
-    // Mark the database as dirty
-    this.isDirty = true;
-
-    // Update database size
-    this._size = this.cache.size;
-
-    // Adjust cache size after adding items
-    this.adjustCacheSize();
-  }
-
-  /**
-   * Saves data from the cache to the database file on when it's mark as dirty.
-   *
-   * @throws {DatabaseError} Throws a custom error if data saving fails.
-   */
-  private async saveToDisk(): Promise<void> {
-    if (this.isDirty) {
-      const dataToWrite = Array.from(this.cache.values());
+    if (!existsSync(destination)) {
       try {
-        await writeFile(this.filePath, JSON.stringify(dataToWrite));
+        mkdirSync(destination, { recursive: true });
       } catch (error: any) {
-        let errorMessage = `Failed to save data to ${this.fileName}: ${error.message}`;
-
-        // Check for specific error codes or types
-        if (error.code === 'ENOENT') {
-          errorMessage = `Failed to save data to ${this.fileName}: File not found`;
-        } else if (error.code === 'ENOSPC') {
-          errorMessage = `Failed to save data to ${this.fileName}: Disk full`;
-        } else if (error.code === 'EACCES') {
-          errorMessage = `Failed to save data to ${this.fileName}: Permission denied`;
-        } else if (error instanceof SyntaxError) {
-          errorMessage = `Failed to parse JSON in ${this.fileName}: Invalid JSON format`;
-        }
-
-        throw new DatabaseError(errorMessage, -1);
-      }
-    }
-  }
-
-  // Retrieve items using an index
-  public getIndexedItems(key: string): T | null {
-    const indexedItem = this.indexes.get(key);
-    return indexedItem ? indexedItem.get(key) || null : null;
-  }
-
-  private removeFromIndexes(item: T | undefined) {
-    if (!item) return;
-    for (const field in item) {
-      const fieldValue = item[field] as unknown as string;
-      const indexMap = this.indexes.get(field);
-      if (indexMap?.has(fieldValue)) {
-        indexMap.delete(fieldValue);
-      }
-    }
-  }
-
-  // Helper function to generate a unique key for an item
-  private getKeyForItem(item: T): string {
-    return (item as any).id;
-  }
-
-  public async insert(items: T | T[]): Promise<T | T[]> {
-    this.addToCache(items);
-    this.saveToDisk();
-    return items;
-  }
-
-  /**
-   * Retrieve a single item from the database based on specified keys.
-   * @param keys - Keys to match for retrieving the item.
-   * @returns Promise resolving to the retrieved item, or null if not found.
-   */
-  public getOne(...keys: KeyChain<T>[]) {
-    return collect<T, Promise<T | Partial<T> | null>>(async (matchers: Matcher<T>[]) => {
-      const item = (await this.read()).find((item) => {
-        return matchers.every((matcher) => matchDataKeyValue(item, matcher));
-      });
-
-      if (item) {
-        if (keys.length) {
-          return createItemFromKeys(keys as string[], item as ObjectLiteral) as Partial<T>;
-        }
-        return item;
-      }
-      return null;
-    });
-  }
-
-  /**
-   * Retrieve multiple items from the database based on specified keys.
-   * @param keys - Keys to match for retrieving items.
-   * @returns Promise resolving to an array of retrieved items, or an array of partial items if keys are provided.
-   */
-  public getAll(...keys: KeyChain<T>[]) {
-    return collect<T, Promise<T[] | Partial<T>[]>>(async (matchers: Matcher<T>[]) => {
-      const items = (await this.read()).filter((item) => {
-        return matchers.every((matcher) => matchDataKeyValue(item, matcher));
-      });
-
-      if (keys.length) {
-        return items.map((item) => {
-          return createItemFromKeys(keys as string[], item as ObjectLiteral) as Partial<T>;
+        throw new DatabaseError(`Failed to create directory: ${destination}`, 'DIR_CREATE_ERROR', {
+          originalError: error.message,
         });
       }
+    }
 
+    const filePath = path.join(destination, `${fileName}.json`);
+    const db = new LuxDB<T>(filePath, cfg);
+
+    await db.init();
+
+    return db;
+  }
+
+  /**
+   * Initialize the database by loading data from disk
+   * Creates the file if it doesn't exist
+   */
+  private async init(): Promise<void> {
+    if (this.initialized) return;
+
+    await this.lock.acquire();
+    try {
+      // Initialize file if it doesn't exist
+      await this.store.initialize();
+
+      // Load data
+      this.data = await this.store.read();
+      this.initialized = true;
+    } finally {
+      this.lock.release();
+    }
+  }
+
+  /**
+   * Persist current data to disk
+   */
+  private async persist(): Promise<void> {
+    await this.store.write(this.data);
+  }
+
+  /**
+   * Get the current number of items in the database
+   */
+  get size(): number {
+    return this.data.length;
+  }
+
+  /**
+   * Get all data (useful for debugging)
+   * Returns a copy to prevent external modification
+   */
+  getData(): T[] {
+    return [...this.data];
+  }
+
+  /**
+   * Insert one or more items into the database
+   *
+   * @param items - Single item or array of items to insert
+   * @returns The inserted items
+   *
+   * @example
+   * await db.insert({ id: '1', name: 'Alice' });
+   * await db.insert([{ id: '2', name: 'Bob' }, { id: '3', name: 'Charlie' }]);
+   */
+  async insert(items: T | T[]): Promise<T | T[]> {
+    await this.init();
+    await this.lock.acquire();
+
+    try {
+      const itemsArray = Array.isArray(items) ? items : [items];
+      this.data.push(...itemsArray);
+      await this.persist();
+      return items;
+    } finally {
+      this.lock.release();
+    }
+  }
+
+  /**
+   * Find a single item matching the query conditions
+   *
+   * @param keys - Optional: specific fields to return
+   * @returns QueryBuilder for fluent query interface
+   *
+   * @example
+   * // Get entire user
+   * const user = await db.getOne().where({ name: 'Alice' });
+   *
+   * // Get specific fields
+   * const userInfo = await db.getOne('name', 'email').where('id', '=', '123');
+   */
+  getOne(...keys: KeyChain<T>[]): QueryBuilder<T, T | Partial<T> | null> {
+    return new QueryBuilder(async (matchers) => {
+      await this.init();
+
+      const item = this.data.find((item) =>
+        matchers.every((matcher) => {
+          return matchDataKeyValue(item, matcher);
+        }),
+      );
+
+      if (!item) return null;
+
+      if (keys.length) {
+        return createItemFromKeys(keys as string[], item as ObjectLiteral) as Partial<T>;
+      }
+      return item;
+    });
+  }
+
+  /**
+   * Find all items matching the query conditions
+   *
+   * @param keys - Optional: specific fields to return
+   * @returns QueryBuilder for fluent query interface
+   *
+   * @example
+   * // Get all active users
+   * const users = await db.getAll().where({ status: 'active' });
+   *
+   * // Get all users older than 18
+   * const adults = await db.getAll().where('age', '>', 18);
+   *
+   * // Get specific fields only
+   * const names = await db.getAll('name').where({ status: 'active' });
+   */
+  getAll(...keys: KeyChain<T>[]): QueryBuilder<T, T[] | Partial<T>[]> {
+    return new QueryBuilder(async (matchers) => {
+      await this.init();
+
+      let items = this.data;
+
+      if (matchers.length) {
+        items = items.filter((item) => matchers.every((matcher) => matchDataKeyValue(item, matcher)));
+      }
+
+      if (keys.length) {
+        return items.map((item) => createItemFromKeys(keys as string[], item as ObjectLiteral) as Partial<T>);
+      }
       return items;
     });
   }
 
   /**
-   * Update a single item in the database based on specified matchers (keys).
-   * @param data - Partial data with fields to update in the matching item.
-   * @returns Promise resolving to the updated item, or null if no match found.
+   * Update a single item matching the query conditions
+   *
+   * @param updates - Partial object with fields to update
+   * @returns QueryBuilder for fluent query interface
+   *
+   * @example
+   * await db.updateOne({ status: 'inactive' }).where('id', '=', '123');
    */
-  public updateOne(data: Partial<T>) {
-    return collect<T, Promise<T | null>>(async (matchers: Matcher<T>[]) => {
-      const list = await this.read();
-      const itemIndex = list.findIndex((item) => {
-        return matchers.every((matcher) => matchDataKeyValue(item, matcher));
-      });
+  updateOne(updates: Partial<T>): QueryBuilder<T, T | null> {
+    return new QueryBuilder(async (matchers) => {
+      await this.init();
+      await this.lock.acquire();
 
-      if (itemIndex >= 0) {
-        list[itemIndex] = { ...list[itemIndex], ...data };
-        await this.save(list);
-        return list[itemIndex];
-      }
-      return null;
-    });
-  }
+      try {
+        // const { matchDataKeyValue } = await import('../utils/match-data-key-value');
+        const index = this.data.findIndex((item) => matchers.every((matcher) => matchDataKeyValue(item, matcher)));
 
-  /**
-   * Update multiple items in the database based on specified matchers (keys).
-   * @param data - Partial data with fields to update in the matching items.
-   * @returns Promise resolving to an array of updated items.
-   */
-  public updateAll(data: Partial<T>) {
-    return collect<T, Promise<T[]>>(async (matchers: Matcher<T>[]) => {
-      const updateItems: T[] = [];
-      const list = (await this.read()).map((item) => {
-        if (matchers.every((matcher) => matchDataKeyValue(item, matcher))) {
-          const updateItem = { ...item, ...data };
-          updateItems.push(updateItem);
-          return updateItem;
+        if (index >= 0) {
+          this.data[index] = { ...this.data[index], ...updates };
+          await this.persist();
+          return this.data[index];
         }
-        return item;
-      });
-
-      await this.save(list);
-
-      return updateItems;
-    });
-  }
-
-  /**
-   * Delete a single item from the database based on specified matchers (keys).
-   * @returns Promise resolving to the deleted item, or null if no match found.
-   */
-  public deleteOne() {
-    return collect<T, Promise<T | null>>(async (matchers: Matcher<T>[]) => {
-      const list = await this.read();
-      const itemIndex = list.findIndex((item) => {
-        return matchers.every((matcher) => matchDataKeyValue(item, matcher));
-      });
-
-      if (itemIndex >= 0) {
-        const deletedItem = list.splice(itemIndex, 1)[0]; // Remove the item at itemIndex
-        await this.save(list);
-        return deletedItem;
+        return null;
+      } finally {
+        this.lock.release();
       }
-      return null;
     });
   }
 
   /**
-   * Delete multiple items from the database based on specified matchers (keys).
-   * @returns Promise resolving to an array of deleted items.
+   * Update all items matching the query conditions
+   *
+   * @param updates - Partial object with fields to update
+   * @returns QueryBuilder for fluent query interface
+   *
+   * @example
+   * await db.updateAll({ status: 'archived' }).where('createdAt', '<', oldDate);
    */
-  public deleteAll() {
-    return collect<T, Promise<T[]>>(async (matchers: Matcher<T>[]) => {
-      const deleteItems: T[] = [];
-      const list = (await this.read()).filter((item) => {
-        const toDelete = matchers.every((matcher) => matchDataKeyValue(item, matcher));
-        if (toDelete) {
-          deleteItems.push(item);
-          return !deleteItems;
+  updateAll(updates: Partial<T>): QueryBuilder<T, T[]> {
+    return new QueryBuilder(async (matchers) => {
+      await this.init();
+      await this.lock.acquire();
+
+      try {
+        const updated: T[] = [];
+        // const { matchDataKeyValue } = await import('../utils/match-data-key-value');
+
+        this.data = this.data.map((item) => {
+          if (matchers.every((matcher) => matchDataKeyValue(item, matcher))) {
+            const updatedItem = { ...item, ...updates };
+            updated.push(updatedItem);
+            return updatedItem;
+          }
+          return item;
+        });
+
+        if (updated.length) {
+          await this.persist();
         }
-        return item;
-      });
-
-      await this.save(list);
-
-      return deleteItems;
+        return updated;
+      } finally {
+        this.lock.release();
+      }
     });
   }
 
   /**
-   * Read the database file and parse its content.
-   * @returns Promise resolving to an array of database items.
-   * @private
+   * Delete a single item matching the query conditions
+   *
+   * @returns QueryBuilder for fluent query interface
+   *
+   * @example
+   * const deleted = await db.deleteOne().where('id', '=', '123');
    */
-  private async read(): Promise<Array<T>> {
-    let fileContent;
-    try {
-      fileContent = await readFile(this.filePath, 'utf-8');
+  deleteOne(): QueryBuilder<T, T | null> {
+    return new QueryBuilder(async (matchers) => {
+      await this.init();
+      await this.lock.acquire();
 
-      return JSON.parse(fileContent);
-    } catch (error: any) {
-      // Handle JSON parsing errors
-      throw new DatabaseError(`Failed to parse JSON in ${this.fileName}: ${error.message}`);
-    }
+      try {
+        // const { matchDataKeyValue } = await import('../utils/match-data-key-value');
+        const index = this.data.findIndex((item) => matchers.every((matcher) => matchDataKeyValue(item, matcher)));
+
+        if (index >= 0) {
+          const [deleted] = this.data.splice(index, 1);
+          await this.persist();
+          return deleted;
+        }
+        return null;
+      } finally {
+        this.lock.release();
+      }
+    });
   }
 
   /**
-   * Save data to the database file.
-   * @param data - Data to be saved (single item or array of items).
-   * @private
+   * Delete all items matching the query conditions
+   *
+   * @returns QueryBuilder for fluent query interface
+   *
+   * @example
+   * const deleted = await db.deleteAll().where('status', '=', 'inactive');
    */
-  private async save(data: T | Array<T>) {
-    try {
-      let content = data;
-      if (!Array.isArray(data)) {
-        content = await this.read();
-        content.push(data);
+  deleteAll(): QueryBuilder<T, T[]> {
+    return new QueryBuilder(async (matchers) => {
+      await this.init();
+      await this.lock.acquire();
+
+      try {
+        const deleted: T[] = [];
+        // const { matchDataKeyValue } = await import('../utils/match-data-key-value');
+
+        this.data = this.data.filter((item) => {
+          const shouldDelete = matchers.every((matcher) => matchDataKeyValue(item, matcher));
+          if (shouldDelete) {
+            deleted.push(item);
+            return false;
+          }
+          return true;
+        });
+
+        if (deleted.length) {
+          await this.persist();
+        }
+        return deleted;
+      } finally {
+        this.lock.release();
       }
-      await writeFile(this.filePath, JSON.stringify(content));
-    } catch (error) {
-      throw new DatabaseError(`Failed to save data to ${this.fileName}`);
+    });
+  }
+
+  /**
+   * Begin a new transaction for atomic operations
+   *
+   * @returns Transaction instance
+   *
+   * @example
+   * const tx = await db.beginTransaction();
+   * tx.insert({ id: '1', name: 'Alice' });
+   * tx.update(user => user.id === '2', { status: 'active' });
+   * await tx.commit(); // All or nothing
+   */
+  async beginTransaction(): Promise<Transaction<T>> {
+    await this.init();
+    await this.lock.acquire();
+
+    return new Transaction<T>(
+      () => this.data,
+      (newData) => {
+        this.data = newData;
+      },
+      () => this.persist(),
+      () => this.lock.release(),
+    );
+  }
+
+  /**
+   * Clear all data from the database
+   * USE WITH CAUTION!
+   */
+  async clear(): Promise<void> {
+    await this.init();
+    await this.lock.acquire();
+
+    try {
+      this.data = [];
+      await this.persist();
+    } finally {
+      this.lock.release();
     }
   }
 }
