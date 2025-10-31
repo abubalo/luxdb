@@ -1,11 +1,11 @@
 {
   "name": "lux-db",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "A high-performance document-based JSON database equiped with CRUD query API functionalities",
   "repository": "git@github.com:abubalo/lux-db.git",
   "author": "Abubakar Balogun <42701866+abubalo@users.noreply.github.com>",
   "license": "MIT",
-  "source": "src/lux-db.ts",
+  "source": "src/index.ts",
   "main": "dist/main.js",
   "module": "dist/module.js",
   "types": "dist/types.d.ts",
