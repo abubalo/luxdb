@@ -4,7 +4,7 @@ import type { LuxDBConfig } from './config';
 /**
  * Instance manager for LuxDB
  * Provides singleton-like behavior while allowing multiple named instances
- * 
+ *
  * Benefits:
  * - Reuse existing connections
  * - Prevent multiple instances of same database
@@ -16,19 +16,17 @@ class InstanceManager {
   /**
    * Get or create a database instance
    * Returns existing instance if already created, otherwise creates new one
-   * 
+   *
    * @param config - Database configuration
    * @returns Database instance
-   * 
+   *
    * @example
    * const db = await InstanceManager.get<User>({ fileName: 'users' });
    * const sameDb = await InstanceManager.get<User>({ fileName: 'users' }); // Returns same instance
    */
   async get<T extends object>(config: LuxDBConfig | string): Promise<LuxDB<T>> {
     // Support string shorthand
-    const cfg: LuxDBConfig = typeof config === 'string' 
-      ? { fileName: config } 
-      : config;
+    const cfg: LuxDBConfig = typeof config === 'string' ? { fileName: config } : config;
 
     const key = this.getKey(cfg);
 
@@ -45,14 +43,12 @@ class InstanceManager {
   /**
    * Create a new instance even if one exists
    * Useful for testing or when you need separate connections
-   * 
+   *
    * @param config - Database configuration
    * @returns New database instance
    */
   async createNew<T extends object>(config: LuxDBConfig | string): Promise<LuxDB<T>> {
-    const cfg: LuxDBConfig = typeof config === 'string' 
-      ? { fileName: config } 
-      : config;
+    const cfg: LuxDBConfig = typeof config === 'string' ? { fileName: config } : config;
 
     return await LuxDB.create<T>(cfg);
   }
@@ -61,9 +57,7 @@ class InstanceManager {
    * Check if an instance exists for given config
    */
   has(config: LuxDBConfig | string): boolean {
-    const cfg: LuxDBConfig = typeof config === 'string' 
-      ? { fileName: config } 
-      : config;
+    const cfg: LuxDBConfig = typeof config === 'string' ? { fileName: config } : config;
 
     const key = this.getKey(cfg);
     return this.instances.has(key);
@@ -74,9 +68,7 @@ class InstanceManager {
    * Useful for cleanup or forcing recreation
    */
   remove(config: LuxDBConfig | string): boolean {
-    const cfg: LuxDBConfig = typeof config === 'string' 
-      ? { fileName: config } 
-      : config;
+    const cfg: LuxDBConfig = typeof config === 'string' ? { fileName: config } : config;
 
     const key = this.getKey(cfg);
     return this.instances.delete(key);
